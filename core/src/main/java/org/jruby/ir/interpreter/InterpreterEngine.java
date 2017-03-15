@@ -71,6 +71,8 @@ import org.jruby.runtime.opto.ConstantCache;
  */
 public class InterpreterEngine {
 
+    public static Object GIL = new Object();
+
     public IRubyObject interpret(ThreadContext context, Block block, IRubyObject self,
                                  InterpreterContext interpreterContext, RubyModule implClass,
                                  String name, Block blockArg) {
@@ -143,62 +145,64 @@ public class InterpreterEngine {
             ipc++;
 
             try {
-                switch (operation.opClass) {
-                    case INT_OP:
-                        interpretIntOp((AluInstr) instr, operation, fixnums, booleans);
-                        break;
-                    case FLOAT_OP:
-                        interpretFloatOp((AluInstr) instr, operation, floats, booleans);
-                        break;
-                    case ARG_OP:
-                        receiveArg(context, instr, operation, args, acceptsKeywordArgument, currDynScope, temp, exception, blockArg);
-                        break;
-                    case CALL_OP:
-                        if (profile) Profiler.updateCallSite(instr, interpreterContext.getScope(), scopeVersion);
-                        processCall(context, instr, operation, currDynScope, currScope, temp, self);
-                        break;
-                    case RET_OP:
-                        return processReturnOp(context, block, instr, operation, currDynScope, temp, self, currScope);
-                    case BRANCH_OP:
-                        switch (operation) {
-                            case JUMP: ipc = ((JumpInstr)instr).getJumpTarget().getTargetPC(); break;
-                            default: ipc = instr.interpretAndGetNewIPC(context, currDynScope, currScope, self, temp, ipc); break;
-                        }
-                        break;
-                    case BOOK_KEEPING_OP:
-                        // IMPORTANT: Preserve these update to currDynScope, self, and args.
-                        // They affect execution of all following instructions in this scope.
-                        switch (operation) {
-                        case PUSH_METHOD_BINDING:
-                            currDynScope = interpreterContext.newDynamicScope(context);
-                            context.pushScope(currDynScope);
+                synchronized(GIL) {
+                    switch (operation.opClass) {
+                        case INT_OP:
+                            interpretIntOp((AluInstr) instr, operation, fixnums, booleans);
                             break;
-                        case PUSH_BLOCK_BINDING:
-                            currDynScope = IRRuntimeHelpers.pushBlockDynamicScopeIfNeeded(context, block, interpreterContext.pushNewDynScope(), interpreterContext.reuseParentDynScope());
+                        case FLOAT_OP:
+                            interpretFloatOp((AluInstr) instr, operation, floats, booleans);
                             break;
-                        case UPDATE_BLOCK_STATE:
-                            self = IRRuntimeHelpers.updateBlockState(block, self);
+                        case ARG_OP:
+                            receiveArg(context, instr, operation, args, acceptsKeywordArgument, currDynScope, temp, exception, blockArg);
                             break;
-                        case PREPARE_NO_BLOCK_ARGS:
-                            args = IRRuntimeHelpers.prepareNoBlockArgs(context, block, args);
+                        case CALL_OP:
+                            if (profile) Profiler.updateCallSite(instr, interpreterContext.getScope(), scopeVersion);
+                            processCall(context, instr, operation, currDynScope, currScope, temp, self);
                             break;
-                        case PREPARE_SINGLE_BLOCK_ARG:
-                            args = IRRuntimeHelpers.prepareSingleBlockArgs(context, block, args);
+                        case RET_OP:
+                            return processReturnOp(context, block, instr, operation, currDynScope, temp, self, currScope);
+                        case BRANCH_OP:
+                            switch (operation) {
+                                case JUMP: ipc = ((JumpInstr)instr).getJumpTarget().getTargetPC(); break;
+                                default: ipc = instr.interpretAndGetNewIPC(context, currDynScope, currScope, self, temp, ipc); break;
+                            }
                             break;
-                        case PREPARE_FIXED_BLOCK_ARGS:
-                            args = IRRuntimeHelpers.prepareFixedBlockArgs(context, block, args);
+                        case BOOK_KEEPING_OP:
+                            // IMPORTANT: Preserve these update to currDynScope, self, and args.
+                            // They affect execution of all following instructions in this scope.
+                            switch (operation) {
+                            case PUSH_METHOD_BINDING:
+                                currDynScope = interpreterContext.newDynamicScope(context);
+                                context.pushScope(currDynScope);
+                                break;
+                            case PUSH_BLOCK_BINDING:
+                                currDynScope = IRRuntimeHelpers.pushBlockDynamicScopeIfNeeded(context, block, interpreterContext.pushNewDynScope(), interpreterContext.reuseParentDynScope());
+                                break;
+                            case UPDATE_BLOCK_STATE:
+                                self = IRRuntimeHelpers.updateBlockState(block, self);
+                                break;
+                            case PREPARE_NO_BLOCK_ARGS:
+                                args = IRRuntimeHelpers.prepareNoBlockArgs(context, block, args);
+                                break;
+                            case PREPARE_SINGLE_BLOCK_ARG:
+                                args = IRRuntimeHelpers.prepareSingleBlockArgs(context, block, args);
+                                break;
+                            case PREPARE_FIXED_BLOCK_ARGS:
+                                args = IRRuntimeHelpers.prepareFixedBlockArgs(context, block, args);
+                                break;
+                            case PREPARE_BLOCK_ARGS:
+                                args = IRRuntimeHelpers.prepareBlockArgs(context, block, args, acceptsKeywordArgument);
+                                break;
+                            default:
+                                processBookKeepingOp(context, block, instr, operation, name, args, self, blockArg, implClass, currDynScope, temp, currScope);
+                                break;
+                            }
                             break;
-                        case PREPARE_BLOCK_ARGS:
-                            args = IRRuntimeHelpers.prepareBlockArgs(context, block, args, acceptsKeywordArgument);
+                        case OTHER_OP:
+                            processOtherOp(context, block, instr, operation, currDynScope, currScope, temp, self, floats, fixnums, booleans);
                             break;
-                        default:
-                            processBookKeepingOp(context, block, instr, operation, name, args, self, blockArg, implClass, currDynScope, temp, currScope);
-                            break;
-                        }
-                        break;
-                    case OTHER_OP:
-                        processOtherOp(context, block, instr, operation, currDynScope, currScope, temp, self, floats, fixnums, booleans);
-                        break;
+                    }
                 }
             } catch (Throwable t) {
                 if (debug) extractToMethodToAvoidC2Crash(instr, t);
